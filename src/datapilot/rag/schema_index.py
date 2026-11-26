@@ -61,6 +61,14 @@ class SentenceTransformerEmbedder:
         return np.asarray(vectors, dtype=np.float32)
 
 
+def embedder_for(model_name: str) -> Embedder:
+    """`hashing` picks the lightweight embedder, which keeps PyTorch out of memory on
+    small hosts; any other value is loaded as a sentence-transformers model."""
+    if model_name == "hashing":
+        return HashingEmbedder()
+    return SentenceTransformerEmbedder(model_name)
+
+
 @dataclass(frozen=True)
 class SchemaDocument:
     table: str

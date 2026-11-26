@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_base_url: str | None = None
 
+    # "hashing" swaps in a lightweight embedder so small hosts never load PyTorch.
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     rag_full_schema_max_columns: int = 40
 

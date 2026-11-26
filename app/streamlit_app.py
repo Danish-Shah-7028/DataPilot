@@ -1,15 +1,17 @@
 """DataPilot web app. Run with: streamlit run app/streamlit_app.py"""
 
+import hashlib
 import tempfile
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from pydantic import SecretStr
 
-from datapilot.config import get_settings
+from datapilot.config import Settings, get_settings
 from datapilot.data.loader import SUPPORTED_SUFFIXES
 from datapilot.graph.state import AgentState
-from datapilot.llm.provider import LLMError
+from datapilot.llm.provider import LLMError, build_chat_model
 from datapilot.session import AnalysisSession, open_session
 from datapilot.tools.charts import build_figure, confusion_matrix_figure, feature_importance_figure
 
@@ -38,8 +40,18 @@ EXAMPLES = {
 }
 
 
+PROVIDERS = {"Groq": "groq", "OpenAI-compatible": "openai"}
+
+
 def init_state() -> None:
-    defaults = {"session": None, "messages": [], "dataset_label": None, "workdir": None}
+    defaults = {
+        "session": None,
+        "messages": [],
+        "dataset_label": None,
+        "workdir": None,
+        "llm_settings": None,
+        "llm_fingerprint": None,
+    }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
@@ -50,22 +62,90 @@ def workdir() -> Path:
     return Path(st.session_state.workdir)
 
 
+def api_key(settings: Settings) -> str:
+    secret = settings.groq_api_key if settings.llm_provider == "groq" else settings.openai_api_key
+    return secret.get_secret_value() if secret else ""
+
+
+def fingerprint(settings: Settings) -> tuple[str, ...]:
+    key_hash = hashlib.sha256(api_key(settings).encode()).hexdigest()
+    return (settings.llm_provider, settings.llm_model, settings.openai_base_url or "", key_hash)
+
+
+def model_settings() -> Settings:
+    """LLM fields in the sidebar. A pasted key only lives in this browser session."""
+    base = get_settings()
+    st.sidebar.subheader("Language model")
+    labels = list(PROVIDERS)
+    default = labels.index(next(k for k, v in PROVIDERS.items() if v == base.llm_provider))
+    provider = PROVIDERS[st.sidebar.selectbox("Provider", labels, index=default)]
+    configured = provider == base.llm_provider
+
+    if provider == "groq":
+        model = st.sidebar.text_input(
+            "Model", base.llm_model if configured else "llama-3.3-70b-versatile"
+        )
+        update = {"llm_provider": "groq", "llm_model": model.strip()}
+        key_field, server_key = "groq_api_key", base.groq_api_key
+        help_text = "Free key at console.groq.com."
+    else:
+        base_url = st.sidebar.text_input(
+            "Base URL", base.openai_base_url or "https://api.openai.com/v1"
+        )
+        model = st.sidebar.text_input("Model", base.llm_model if configured else "gpt-4.1-mini")
+        update = {
+            "llm_provider": "openai",
+            "llm_model": model.strip(),
+            "openai_base_url": base_url.strip() or None,
+        }
+        key_field, server_key = "openai_api_key", base.openai_api_key
+        help_text = "Any OpenAI-compatible key, for example from OpenRouter."
+
+    pasted = st.sidebar.text_input(
+        "API key",
+        type="password",
+        placeholder="using the key from .env" if server_key else "paste your key",
+        help=f"{help_text} It stays in this browser session and is never stored or logged.",
+    )
+    if pasted.strip():
+        update[key_field] = SecretStr(pasted.strip())
+    return base.model_copy(update=update)
+
+
+def use_model(session: AnalysisSession, settings: Settings) -> bool:
+    """Point the session at the model in the sidebar, rebuilding it only when it changed."""
+    if st.session_state.llm_fingerprint == fingerprint(settings):
+        return True
+    try:
+        session.context.llm = build_chat_model(settings)
+    except LLMError as error:
+        st.error(str(error))
+        return False
+    st.session_state.llm_fingerprint = fingerprint(settings)
+    return True
+
+
 def load_dataset(paths: list[Path], label: str) -> None:
+    settings: Settings = st.session_state.llm_settings
+    if not api_key(settings):
+        st.sidebar.warning("Paste an API key above first.")
+        return
     try:
         with st.spinner("Loading data and indexing the schema..."):
-            st.session_state.session = open_session(paths, workdir())
+            st.session_state.session = open_session(paths, workdir(), settings=settings)
     except LLMError as error:
         st.session_state.session = None
-        st.error(f"{error}")
+        st.error(str(error))
         return
+    st.session_state.llm_fingerprint = fingerprint(settings)
     st.session_state.messages = []
     st.session_state.dataset_label = label
 
 
 def sidebar() -> None:
-    settings = get_settings()
     st.sidebar.title("DataPilot")
-    st.sidebar.caption(f"Model: `{settings.llm_model}` via {settings.llm_provider}")
+    st.session_state.llm_settings = model_settings()
+    st.sidebar.divider()
 
     source = st.sidebar.radio("Data", ["Sample dataset", "Upload files"], horizontal=True)
     if source == "Sample dataset":
@@ -192,6 +272,8 @@ def render_answer(state: AgentState) -> None:
 
 def ask(question: str) -> None:
     session: AnalysisSession = st.session_state.session
+    if not use_model(session, st.session_state.llm_settings):
+        return
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
@@ -206,20 +288,99 @@ def ask(question: str) -> None:
     st.session_state.messages.append({"role": "assistant", "state": state})
 
 
+LANDING_STYLE = """
+<style>
+.dp-eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: .78rem;
+              opacity: .6; margin: 1.5rem 0 .4rem; }
+.dp-title { font-size: 2.6rem; font-weight: 700; line-height: 1.15; margin-bottom: .7rem; }
+.dp-lead { font-size: 1.1rem; opacity: .8; max-width: 44rem; line-height: 1.55; }
+.dp-flow { display: flex; flex-wrap: wrap; gap: .45rem; margin: .3rem 0 1.2rem; }
+.dp-step { border: 1px solid rgba(128, 128, 128, .35); border-radius: 999px;
+           padding: .25rem .8rem; font-size: .88rem; }
+.dp-step b { color: #2f6fdb; margin-right: .35rem; }
+.dp-footer { font-size: .85rem; opacity: .6; margin-top: 2rem; }
+</style>
+"""
+FEATURES = [
+    (
+        "Ask in plain English",
+        'Trends, rankings and comparisons, plus follow-ups like "now only for Europe". '
+        "Works with CSV, Excel and SQLite.",
+    ),
+    (
+        "Checks its own work",
+        "A critic catches errors, empty results and joins that duplicate rows, then sends "
+        "the code back with a concrete fix.",
+    ),
+    (
+        "Real models for predictions",
+        '"Who is likely to churn?" trains and compares scikit-learn models with '
+        "cross-validation instead of guessing.",
+    ),
+]
+FLOW = [
+    "Route the question",
+    "Find the right tables",
+    "Plan",
+    "Write SQL or pandas",
+    "Run it in a sandbox",
+    "Check and retry",
+    "Explain",
+]
+
+
+def landing_page() -> None:
+    st.markdown(LANDING_STYLE, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="dp-eyebrow">Multi-agent data analyst</div>'
+        '<div class="dp-title">Ask your data a question.</div>'
+        '<p class="dp-lead">DataPilot plans the analysis, writes the code, runs it safely and '
+        "fixes its own mistakes. You get a short answer, the table, a chart and the exact "
+        "SQL or Python behind it.</p>",
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "To start, paste an API key in the sidebar (a free Groq key works), load a sample "
+        "dataset or upload your own file, then ask away."
+    )
+
+    for column, (title, text) in zip(st.columns(3), FEATURES, strict=True):
+        with column.container(border=True):
+            st.markdown(f"**{title}**")
+            st.caption(text)
+
+    st.markdown("#### How it works")
+    steps = "".join(
+        f'<span class="dp-step"><b>{number}</b>{step}</span>'
+        for number, step in enumerate(FLOW, start=1)
+    )
+    st.markdown(f'<div class="dp-flow">{steps}</div>', unsafe_allow_html=True)
+
+    st.markdown("#### Things to try")
+    for label in ("Online retail, 5 linked tables (SQLite)", "Telecom customer churn (Excel)"):
+        st.markdown(f"*{label}*")
+        for example in EXAMPLES[label][:2]:
+            st.markdown(f"- {example}")
+
+    st.markdown(
+        '<div class="dp-footer">Your API key stays in this browser session and is never '
+        "stored. Built with LangGraph, DuckDB, scikit-learn and Streamlit.</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="DataPilot", layout="wide")
     init_state()
     sidebar()
 
-    st.title("DataPilot")
-    st.caption(
-        "Ask questions about your data in plain English. A team of agents plans the analysis, "
-        "writes and runs the SQL or pandas code, checks the result and explains it."
-    )
     session: AnalysisSession | None = st.session_state.session
     if session is None:
-        st.info("Load a sample dataset or upload your own files from the sidebar to start.")
+        landing_page()
         return
+
+    st.title("DataPilot")
+    st.caption(f"Talking to: {st.session_state.dataset_label}")
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):

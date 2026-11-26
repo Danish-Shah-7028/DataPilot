@@ -68,6 +68,26 @@ docker build -t datapilot .
 docker run --rm -p 8501:8501 --env-file .env datapilot
 ```
 
+In the app you can also paste an API key in the sidebar instead of using `.env`. The
+key stays in your browser session and is never stored.
+
+## Deploy
+
+The app is deployed for free on [Streamlit Community Cloud](https://share.streamlit.io),
+straight from this GitHub repo. Visitors paste their own API key, so hosting it costs
+nothing.
+
+1. Sign in at share.streamlit.io with GitHub and choose **Create app**, then deploy from
+   this repository: branch `main`, main file `app/streamlit_app.py`.
+2. Under **Advanced settings**, choose **Python 3.11** and add this secret:
+   ```toml
+   EMBEDDING_MODEL = "hashing"
+   ```
+   It uses the lightweight schema embedder, so PyTorch is never loaded and the app stays
+   within the free memory limit.
+3. Click **Deploy**. Dependencies are installed from `uv.lock`, and each push to `main`
+   redeploys the app.
+
 ## Evaluation
 
 ```bash

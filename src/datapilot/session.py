@@ -15,8 +15,8 @@ from datapilot.ml.confidence_model import load_confidence_model
 from datapilot.rag.schema_index import (
     Embedder,
     SchemaIndex,
-    SentenceTransformerEmbedder,
     build_schema_index,
+    embedder_for,
 )
 
 
@@ -56,9 +56,7 @@ def open_session(
     workspace = load_files(paths, workdir / "workspace.duckdb")
     renamed = {table.name: table.renamed_columns for table in workspace.tables}
     profile = profile_database(workspace.db_path, renamed)
-    index = build_schema_index(
-        profile, embedder or SentenceTransformerEmbedder(settings.embedding_model)
-    )
+    index = build_schema_index(profile, embedder or embedder_for(settings.embedding_model))
     context = AgentContext(
         llm=llm or build_chat_model(settings),
         db_path=workspace.db_path,
