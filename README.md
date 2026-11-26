@@ -1,5 +1,7 @@
 # DataPilot
 
+**Try it out:** https://datapilot-6fdsioelknyxoshmgu9r3c.streamlit.app/
+
 A self-correcting, multi-agent data analyst. You upload a CSV, Excel or SQLite file and
 ask a question in plain English. A LangGraph workflow then plans the analysis, writes
 DuckDB SQL or pandas code, runs it in a sandbox, checks the result and fixes its own
