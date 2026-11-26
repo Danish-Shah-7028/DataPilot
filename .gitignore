@@ -1,0 +1,30 @@
+# Secrets and local settings
+.env
+.env.*
+.vscode/
+.idea/
+
+# Kept locally, not part of the published code
+tests/
+reports/
+models/
+logs/
+
+# Downloaded or generated data (only data/samples is published)
+data/raw/
+data/benchmark/
+
+# Python and tooling caches
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.cache/
+.pytest_cache/
+.ruff_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
